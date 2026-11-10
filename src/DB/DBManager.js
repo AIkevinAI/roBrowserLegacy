@@ -965,48 +965,48 @@ class DB {
 
 			// Legacy Navigation
 			if (PACKETVER.value >= 20111010) {
-				loadLuaValue(
-					DB.LUA_PATH + 'navigation/navi_map_krpri.lub',
+				loadLuaValueAliases(
+					getNaviAliases('map'),
 					'Navi_Map',
 					function (json) {
 						fillNaviTable(NaviMapTable, json);
 					},
 					onLoad()
 				);
-				loadLuaValue(
-					DB.LUA_PATH + 'navigation/navi_mob_krpri.lub',
+				loadLuaValueAliases(
+					getNaviAliases('mob'),
 					'Navi_Mob',
 					function (json) {
 						fillNaviTable(NaviMobTable, json);
 					},
 					onLoad()
 				);
-				loadLuaValue(
-					DB.LUA_PATH + 'navigation/navi_npc_krpri.lub',
+				loadLuaValueAliases(
+					getNaviAliases('npc'),
 					'Navi_Npc',
 					function (json) {
 						fillNaviTable(NaviNpcTable, json);
 					},
 					onLoad()
 				);
-				loadLuaValue(
-					DB.LUA_PATH + 'navigation/navi_link_krpri.lub',
+				loadLuaValueAliases(
+					getNaviAliases('link'),
 					'Navi_Link',
 					function (json) {
 						fillNaviTable(NaviLinkTable, json);
 					},
 					onLoad()
 				);
-				loadLuaValue(
-					DB.LUA_PATH + 'navigation/navi_linkdistance_krpri.lub',
+				loadLuaValueAliases(
+					getNaviAliases('linkdistance'),
 					'Navi_Distance',
 					function (json) {
 						fillNaviTable(NaviLinkDistanceTable, json);
 					},
 					onLoad()
 				);
-				loadLuaValue(
-					DB.LUA_PATH + 'navigation/navi_npcdistance_krpri.lub',
+				loadLuaValueAliases(
+					getNaviAliases('npcdistance'),
 					'Navi_NpcDistance',
 					function (json) {
 						fillNaviTable(NaviNpcDistanceTable, json);
@@ -5879,7 +5879,7 @@ function loadWorldMapInfo(basePath, onEnd) {
 
 			// Function to add a World Category (e.g., Midgard)
 			ctx.AddWorldMapCategory = (id, name, tableKey) => {
-				const decodedName = userStringDecoder.decode(name);
+				const decodedName = userStringDecoder.decode(name, userCharpage);
 				const decodedId = userStringDecoder.decode(id);
 				const decodedTableKey = userStringDecoder.decode(tableKey);
 
@@ -7422,9 +7422,9 @@ function loadSignBoardData(filename, callback, onEnd) {
 
 				// create required functions in context
 				ctx.AddSignBoardData = (key, translation) => {
-					const decoded_key = key && key.length > 1 ? userStringDecoder.decode(key) : null;
+					const decoded_key = key && key.length > 1 ? userStringDecoder.decode(key, userCharpage) : null;
 					const decoded_translation =
-						translation && translation.length > 1 ? userStringDecoder.decode(translation) : null;
+						translation && translation.length > 1 ? userStringDecoder.decode(translation, userCharpage) : null;
 					SignBoardTranslatedTable[decoded_key] = decoded_translation;
 					return 1;
 				};
@@ -8359,6 +8359,7 @@ function loadLuaTable(file_list, table_name, callback, onEnd, contextFunc, useCh
  * @author guicaulada
  */
 function loadLuaValue(file_path, variable_name, callback, onEnd) {
+	let success = false;
 	try {
 		console.log('Loading file "' + file_path + '"...');
 		Client.loadFile(file_path, async function (file) {
@@ -8443,21 +8444,82 @@ function loadLuaValue(file_path, variable_name, callback, onEnd) {
 
 				// Return the extracted value
 				callback.call(null, result);
+				success = true;
 			} catch (hException) {
 				console.error(`(${file_path}) error: `, hException);
 				callback.call(null, null);
 			} finally {
 				if (onEnd) {
-					onEnd.call();
+					onEnd.call(null, success);
 				}
+			}
+		}, function (error) {
+			// Missing optional tables (e.g. legacy navigation data absent from some
+			// clients) must not leave the DB progress counter waiting forever.
+			console.warn('[loadLuaValue] Can\'t load "' + file_path + '":', error);
+			if (onEnd) {
+				onEnd.call(null, false);
 			}
 		});
 	} catch (e) {
 		console.error('error: ', e);
 		if (onEnd) {
-			onEnd.call();
+			onEnd.call(null, false);
 		}
 	}
+}
+
+/**
+ * Load a Lua value from the first existing file in an alias list.
+ *
+ * Navigation tables use a language suffix that differs per client
+ * (`navi_map_krpri.lub` on kRO, `navi_map_ch.lub` on CHN, ...). Trying the
+ * aliases in order keeps every client working without hard-coding one name.
+ *
+ * @param {string[]} file_list
+ * @param {string} variable_name
+ * @param {function} callback
+ * @param {function} onEnd - called once after a success or after every alias fails
+ */
+function loadLuaValueAliases(file_list, variable_name, callback, onEnd) {
+	let index = 0;
+
+	function tryNext() {
+		if (index >= file_list.length) {
+			if (onEnd) {
+				onEnd.call();
+			}
+			return;
+		}
+
+		loadLuaValue(file_list[index++], variable_name, callback, success => {
+			if (success) {
+				if (onEnd) {
+					onEnd.call();
+				}
+			} else {
+				tryNext();
+			}
+		});
+	}
+
+	tryNext();
+}
+
+/**
+ * Candidate paths for a navigation table.
+ *
+ * The suffix is the client language: kRO ships `_krpri`, CHN ships `_ch`.
+ * The preferred suffix is tried first, then the others as fallbacks.
+ *
+ * @param {string} name - `map`, `mob`, `npc`, `link`, `linkdistance`, `npcdistance`
+ * @returns {string[]}
+ */
+function getNaviAliases(name) {
+	const base = DB.LUA_PATH + 'navigation/navi_' + name;
+	const preferred = langType === 0x03 ? '_ch' : langType === 0x04 ? '_tw' : '_krpri';
+	const suffixes = [preferred, '_krpri', '_ch', '_tw', '_jp'];
+	return Array.from(new Set(suffixes)).map(suffix => base + suffix + '.lub');
 }
 
 /**
