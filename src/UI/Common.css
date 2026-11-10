@@ -8,6 +8,11 @@
 
 * {
 	-moz-user-select: none;
+	/* SCDream4.otf is registered at its real weight (200) and SCDream6.otf at 600,
+	   so normal text keeps its genuine outlines and `bold` resolves to the real
+	   SemiBold cut instead of faux-bolding the light one. Keep synthesis enabled so
+	   any weight in between still resolves to the nearest real cut. */
+	font-synthesis: auto;
 }
 
 html,
@@ -45,6 +50,10 @@ body.ro-page-zoomed canvas {
 body {
 	background-color: black;
 	font-size: 12px;
+	/* 400 = the weight the UI is styled around; SCDream4 is registered at its real
+	   200 and gets selected for anything at or below 400, with the browser adding
+	   only the small amount of weight needed to reach 400. */
+	font-weight: 400;
 	/* 'SCDream' first: wins only when the server actually serves the client font (loaded via
 	   @font-face in DBManager). When it isn't served it resolves to Arial — the official client's
 	   window UI font for intl/america servicetype (Ragexe draws window text with CreateFontA on the

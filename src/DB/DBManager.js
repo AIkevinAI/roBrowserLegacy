@@ -5103,62 +5103,49 @@ function loadFontFromClient(fontPath) {
 	Client.loadFile(
 		fontPath + 'SCDream4.otf',
 		function (fontData4) {
-			const base64_4 = arrayBufferToBase64(fontData4);
-			const fontUrl4 = 'data:font/opentype;base64,' + base64_4;
+			const fontUrl4 = 'data:font/opentype;base64,' + arrayBufferToBase64(fontData4);
+
+			// Declare the face at the weight the file actually contains (200), so the
+			// browser applies the real outlines and only synthesizes when a heavier
+			// weight is requested. Declaring SCDream4 at 400/700/900 made Chrome reuse
+			// the very light cut everywhere without any synthetic thickening, which is
+			// what made the item text look washed out and hard to read.
 			console.log('Loading file "' + fontPath + 'SCDream6.otf"...');
 			Client.loadFile(
 				fontPath + 'SCDream6.otf',
 				function (fontData6) {
-					const base64_6 = arrayBufferToBase64(fontData6);
-					const fontUrl6 = 'data:font/opentype;base64,' + base64_6;
+					const fontUrl6 = 'data:font/opentype;base64,' + arrayBufferToBase64(fontData6);
 
 					const style = document.createElement('style');
 					style.textContent = `
-							@font-face {  
-								font-family: 'SCDream';  
-								src: url('${fontUrl6}') format('opentype');  
-								font-weight: 100; /* Thin */  
-								font-style: normal;  
-							}  
-							
-							@font-face {  
-								font-family: 'SCDream';  
-								src: url('${fontUrl6}') format('opentype');  
-								font-weight: 200; /* Extra Light */  
-								font-style: normal;  
-							}  
-							
-							@font-face {  
-								font-family: 'SCDream';  
-								src: url('${fontUrl6}') format('opentype');  
-								font-weight: 300; /* Light */  
-								font-style: normal;  
-							}  											
-							@font-face {  
-								font-family: 'SCDream';  
-								src: url('${fontUrl6}') format('opentype');  
-								font-weight: 400; /* Normal */  
-								font-style: normal;  
-							}  
-							
-							@font-face {  
-								font-family: 'SCDream';  
-								src: url('${fontUrl4}') format('opentype');  
-								font-weight: 700; /* Bold */  
-								font-style: normal;  
+							@font-face {
+								font-family: 'SCDream';
+								src: url('${fontUrl4}') format('opentype');
+								font-weight: 200; /* Real weight of SCDream4.otf */
+								font-style: normal;
 							}
-								
-							@font-face {  
-								font-family: 'SCDream';  
-								src: url('${fontUrl4}') format('opentype');  
-								font-weight: 900; /* Black/Bolder */  
-								font-style: normal;  
-							}  								
+
+							@font-face {
+								font-family: 'SCDream';
+								src: url('${fontUrl6}') format('opentype');
+								font-weight: 600; /* Real weight of SCDream6.otf */
+								font-style: normal;
+							}
 						`;
 					document.head.appendChild(style);
 				},
 				function () {
-					console.warn('[loadFontFromClient] - Failed to load client font:', fontPath);
+					console.warn('[loadFontFromClient] - Failed to load client font:', fontPath + 'SCDream6.otf');
+					const style = document.createElement('style');
+					style.textContent = `
+							@font-face {
+								font-family: 'SCDream';
+								src: url('${fontUrl4}') format('opentype');
+								font-weight: 200;
+								font-style: normal;
+							}
+						`;
+					document.head.appendChild(style);
 				}
 			);
 		},
