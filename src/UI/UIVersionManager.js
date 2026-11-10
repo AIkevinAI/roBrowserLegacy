@@ -17,7 +17,58 @@ class UIVersionManager {
 		return name in _UIAliases ? _UIAliases[name] : false;
 	}
 
+	/**
+	 * Optional per-deployment UI version override.
+	 *
+	 * `ROConfig.uiVersionOverride` maps a public component name to the `name`
+	 * of one of its version siblings, for clients whose assets do not follow
+	 * their PACKETVER (for example a 2021 client that still ships the classic
+	 * login window). Unset or unknown names fall back to the normal selection.
+	 *
+	 * @param {string} publicName
+	 * @param {object} versionInfo
+	 * @return {object|null}
+	 */
+	static getOverride(publicName, versionInfo) {
+		const overrides = Configs.get('uiVersionOverride');
+		if (!overrides || typeof overrides !== 'object') {
+			return null;
+		}
+
+		const wanted = overrides[publicName];
+		if (!wanted) {
+			return null;
+		}
+
+		const pools = [versionInfo.common, versionInfo.re, versionInfo.prere];
+		for (let i = 0; i < pools.length; ++i) {
+			const pool = pools[i];
+			if (!pool) {
+				continue;
+			}
+			for (const UI of Object.values(pool)) {
+				if (UI && UI.name === wanted) {
+					return UI;
+				}
+			}
+		}
+
+		if (versionInfo.default && versionInfo.default.name === wanted) {
+			return versionInfo.default;
+		}
+
+		console.warn('[UIVersion] uiVersionOverride "' + wanted + '" not found for ' + publicName);
+		return null;
+	}
+
 	static selectUIVersion(publicName, versionInfo) {
+		const override = UIVersionManager.getOverride(publicName, versionInfo);
+		if (override) {
+			_UIAliases[publicName] = override.name;
+			console.log('%c[UIVersion] ' + publicName + ': ', 'color:#007000', override.name + ' (override)');
+			return override;
+		}
+
 		let SelectedUI = versionInfo.default;
 		let _maxDate = 0;
 
