@@ -167,12 +167,35 @@ function addRouletteIcon() {
 	_iconBtn.addEventListener('mousedown', e => e.stopImmediatePropagation());
 	_iconBtn.addEventListener('click', onClickIcon);
 	document.body.appendChild(_iconBtn);
-	const iconPath = 'basic_interface/roullette/RoulletteIcon.bmp';
-	Client.loadFile(DB.INTERFACE_PATH + iconPath, function (data) {
-		if (_iconBtn) {
-			_iconBtn.style.backgroundImage = `url(${data})`;
+
+	// Clients disagree on where this icon lives: kRO keeps it inside the
+	// `roullette/` UI folder, older CHN clients ship it directly under
+	// `basic_interface/`, and the current CHN client uses
+	// `collection/roulletteicon.bmp`. Try every known spelling.
+	const iconPaths = [
+		'basic_interface/roulletteicon.bmp',
+		'basic_interface/roullette/RoulletteIcon.bmp',
+		'collection/roulletteicon.bmp'
+	];
+
+	function loadIcon(index) {
+		if (index >= iconPaths.length) {
+			return;
 		}
-	});
+		Client.loadFile(
+			DB.INTERFACE_PATH + iconPaths[index],
+			function (data) {
+				if (_iconBtn) {
+					_iconBtn.style.backgroundImage = `url(${data})`;
+				}
+			},
+			function () {
+				loadIcon(index + 1);
+			}
+		);
+	}
+
+	loadIcon(0);
 }
 
 /**
