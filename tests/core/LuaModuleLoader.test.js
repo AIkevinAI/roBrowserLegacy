@@ -970,4 +970,40 @@ describe('LuaModuleLoader', () => {
 			}
 		});
 	});
+
+	describe('Concurrent execution on a shared VM', () => {
+		it('serializes overlapping doFile() calls so coroutine anchors are removed safely', async () => {
+			// Each script yields inside require() while Wasmoon fetches its module.
+			// The delays make an earlier-started job finish before a later one, which would
+			// shift the later job's global-stack anchor and corrupt the VM without serialization.
+			const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+			const delays = [5, 40, 70, 100, 130, 160];
+
+			names.forEach(name => {
+				lua.mountFile(`${name}.lua`, `return "${name}" .. require("conc_${name}")`);
+			});
+
+			vi.spyOn(Client, 'loadFile').mockImplementation((filename, onload, onerror) => {
+				const match = /^conc_([a-f])\.lua$/.exec(filename);
+				if (!match) {
+					onerror(new Error(`Unexpected file: ${filename}`));
+					return;
+				}
+				setTimeout(() => onload(new TextEncoder().encode('return "_loaded"')), delays[names.indexOf(match[1])]);
+			});
+
+			const topBefore = lua.global.getTop();
+			const results = await Promise.all(names.map(name => lua.doFile(`${name}.lua`)));
+			const topAfter = lua.global.getTop();
+			const lingeringThreads = Array.from({ length: topAfter }, (_, index) => lua.global.getValue(index + 1)).filter(
+				value => value instanceof CLua.LuaThread
+			);
+
+			expect(results.map(value => LuaModuleLoader.decodeLuaString(value))).toEqual(
+				names.map(name => `${name}_loaded`)
+			);
+			expect(topBefore).toBe(0);
+			expect(lingeringThreads).toHaveLength(0);
+		});
+	});
 });

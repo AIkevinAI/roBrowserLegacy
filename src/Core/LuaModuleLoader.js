@@ -106,6 +106,13 @@ let _lastClientLoadFile = Client.loadFile;
 const _vmState = new WeakMap();
 
 /**
+ * Per-Lua-VM tail promise used to serialize asynchronous Lua execution.
+ *
+ * @type {WeakMap<object, Promise<void>>}
+ */
+const _vmQueues = new WeakMap();
+
+/**
  * Global loader configuration state.
  */
 const _config = {
@@ -1614,6 +1621,72 @@ class LuaModuleLoader {
 	}
 
 	/**
+	 * Run an asynchronous operation exclusively on a Wasmoon Lua VM.
+	 *
+	 * Wasmoon's `callByteCode` anchors every async coroutine on the VM's global stack and removes
+	 * it by absolute stack index when the coroutine settles. When several `doFile()` /
+	 * `doString()` calls overlap on the same VM, a job that started earlier but finishes first
+	 * shifts the anchors of the later jobs, so their removals pop the wrong entries. Some
+	 * coroutines stay anchored forever while others are unanchored while still running, which lets
+	 * Lua collect a live thread and corrupts the VM (`memory access out of bounds`).
+	 *
+	 * Serializing Lua execution per VM while keeping asset fetching parallel avoids that.
+	 *
+	 * @param {object} lua - Wasmoon Lua instance
+	 * @param {Function} operation - Function returning a value or a Promise
+	 * @returns {Promise<any>}
+	 */
+	static runSerialized(lua, operation) {
+		const previous = _vmQueues.get(lua) || Promise.resolve();
+		const run = previous.then(() => operation());
+		_vmQueues.set(
+			lua,
+			run.then(
+				() => undefined,
+				() => undefined
+			)
+		);
+		return run;
+	}
+
+	/**
+	 * Wrap `doString()` / `doFile()` on a Wasmoon Lua instance so overlapping asynchronous
+	 * executions are queued instead of interleaved on the same VM. Safe and idempotent.
+	 *
+	 * @param {object} lua - Wasmoon Lua instance
+	 * @returns {object} The same instance
+	 */
+	static installSerializedExecution(lua) {
+		if (!lua || lua.__roSerializedExecution) {
+			return lua;
+		}
+
+		const rawDoString = lua.doString.bind(lua);
+		const rawDoFile = lua.doFile.bind(lua);
+
+		lua.__roRawDoString = rawDoString;
+		lua.__roRawDoFile = rawDoFile;
+		lua.doString = script => LuaModuleLoader.runSerialized(lua, () => rawDoString(script));
+		lua.doFile = filename => LuaModuleLoader.runSerialized(lua, () => rawDoFile(filename));
+		lua.__roSerializedExecution = true;
+
+		return lua;
+	}
+
+	/**
+	 * Execute a script on a VM without re-entering the serialization queue.
+	 * Used by helpers that already hold the queue slot.
+	 *
+	 * @param {object} lua - Wasmoon Lua instance
+	 * @param {string} script - Lua source
+	 * @returns {Promise<any>}
+	 */
+	static doStringUnqueued(lua, script) {
+		const raw = lua && lua.__roRawDoString;
+		return raw ? raw(script) : lua.doString(script);
+	}
+
+	/**
 	 * Set up a Wasmoon `Lua` instance with `LuaModuleLoader`'s `require()`, `package.loaders`,
 	 * `package.searchers`, `package.path`, `loadfile()`, and `dofile()` pipeline.
 	 *
@@ -1698,6 +1771,8 @@ class LuaModuleLoader {
 			lua.doStringSync(LUA_BOOTSTRAP_SCRIPT);
 		}
 
+		LuaModuleLoader.installSerializedExecution(lua);
+
 		return lua;
 	}
 
@@ -1734,12 +1809,17 @@ class LuaModuleLoader {
 		LuaModuleLoader.ensureSetup(lua, options);
 		const currentPackagePath = LuaModuleLoader.getCurrentPackagePath(lua);
 		await LuaModuleLoader.fetchModuleAsync(lua, modname, currentPackagePath, options);
-		lua.ctx.__ro_req_target = modname;
-		try {
-			return await lua.doString('local m = __ro_req_target; __ro_req_target = nil; return require(m)');
-		} finally {
-			lua.ctx.__ro_req_target = undefined;
-		}
+		return LuaModuleLoader.runSerialized(lua, async () => {
+			lua.ctx.__ro_req_target = modname;
+			try {
+				return await LuaModuleLoader.doStringUnqueued(
+					lua,
+					'local m = __ro_req_target; __ro_req_target = nil; return require(m)'
+				);
+			} finally {
+				lua.ctx.__ro_req_target = undefined;
+			}
+		});
 	}
 
 	/**
@@ -1763,12 +1843,17 @@ class LuaModuleLoader {
 			err.code = 'LUA_FILE_NOT_FOUND';
 			throw err;
 		}
-		lua.ctx.__ro_dofile_target = resolved.memfsPath;
-		try {
-			return await lua.doString('local f = __ro_dofile_target; __ro_dofile_target = nil; return dofile(f)');
-		} finally {
-			lua.ctx.__ro_dofile_target = undefined;
-		}
+		return LuaModuleLoader.runSerialized(lua, async () => {
+			lua.ctx.__ro_dofile_target = resolved.memfsPath;
+			try {
+				return await LuaModuleLoader.doStringUnqueued(
+					lua,
+					'local f = __ro_dofile_target; __ro_dofile_target = nil; return dofile(f)'
+				);
+			} finally {
+				lua.ctx.__ro_dofile_target = undefined;
+			}
+		});
 	}
 
 	/**
