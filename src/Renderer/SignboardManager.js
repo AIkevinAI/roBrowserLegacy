@@ -2,6 +2,7 @@
 
 import glMatrix from 'Utils/gl-matrix.js';
 import Renderer from 'Renderer/Renderer.js';
+import Altitude from 'Renderer/Map/Altitude.js';
 import DB from 'DB/DBManager.js';
 import EntitySignboard from 'UI/Components/EntitySignboard/EntitySignboard.js';
 import VerticalFlip from 'Renderer/Effects/Shaders/VerticalFlip.js';
@@ -17,6 +18,15 @@ const _size = new Float32Array(2);
  * @description Manages the rendering of signboards in the game.
  */
 class SignboardManager {
+	/**
+	 * Handler invoked when a signboard label is activated (double click).
+	 * Assigned by the engine so the renderer does not have to know about
+	 * entities, packets or path finding.
+	 *
+	 * @type {?function(number, number, object)}
+	 */
+	static onActivate = null;
+
 	/**
 	 * Adds a new signboard to the manager.
 	 * @param {number} x - The x-coordinate of the signboard.
@@ -59,6 +69,14 @@ class SignboardManager {
 			posX: signboardData.type === 1 ? 120 : 140,
 			posY: signboardData.type === 1 ? 15 : 70
 		});
+
+		// A signboard marks a spot on the map, so activating it should behave
+		// like clicking that spot: talk to the NPC standing there, or walk to it.
+		signboardUI.onEnter = () => {
+			if (typeof SignboardManager.onActivate === 'function') {
+				SignboardManager.onActivate(x, y, signboardData);
+			}
+		};
 	}
 
 	static render(gl, modelView, projection) {
@@ -68,9 +86,12 @@ class SignboardManager {
 		signboards.forEach(signboard => {
 			const ui = signboard.ui.ui[0];
 
-			// Calculate world position
+			// Calculate world position. Entities (and their sprites) sit at the
+			// terrain altitude of their cell, so the signboard has to use it too:
+			// with a flat ground level every board on a raised map (Payon, ...)
+			// was drawn below its NPC and drifted over the ground in front of it.
 			_vector[0] = signboard.x + 0.5;
-			_vector[1] = 0; // Ground level
+			_vector[1] = -Altitude.getCellHeight(signboard.x, signboard.y);
 			_vector[2] = signboard.y + 0.5;
 			mat4.translate(_matrix, modelView, _vector);
 

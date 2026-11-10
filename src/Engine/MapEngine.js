@@ -253,6 +253,7 @@ class MapEngine {
 			MapControl.onRequestWalk = onRequestWalk;
 			MapControl.onRequestStopWalk = onRequestStopWalk;
 			MapControl.onRequestDropItem = onDropItem;
+			SignboardManager.onActivate = onSignboardActivate;
 
 			// Hook packets
 			Network.hookPacket(PACKET.ZC.AID, onReceiveAccountID);
@@ -623,6 +624,9 @@ function onConnectionRefused(pkt) {
  * @param {object} pkt - PACKET.ZC.NPCACK_MAPMOVE
  */
 function onMapChange(pkt) {
+	// Drop any pending signboard walk from the previous map
+	_signboardGoal = null;
+
 	MapRenderer.onLoad = () => {
 		Session.Entity.set({
 			PosDir: [pkt.xPos, pkt.yPos, 0],
@@ -1071,6 +1075,9 @@ let _walkLastTick = 0;
 function onRequestWalk() {
 	Events.clearTimeout(_walkTimer);
 
+	// A manual click cancels any signboard walk in progress
+	_signboardGoal = null;
+
 	// If siting, update direction
 	if (Session.Entity.action === Session.Entity.ACTION.SIT || KEYS.SHIFT) {
 		Session.Entity.lookTo(Mouse.world.x, Mouse.world.y);
@@ -1095,6 +1102,205 @@ function onRequestWalk() {
  */
 function onRequestStopWalk() {
 	Events.clearTimeout(_walkTimer);
+}
+
+/**
+ * Find an NPC standing on (or right next to) a map cell.
+ *
+ * @param {number} x
+ * @param {number} y
+ * @return {object|null} NPC entity
+ */
+function getNpcAtCell(x, y) {
+	let found = null;
+	let bestDistance = 2;
+
+	EntityManager.forEach(function (entity) {
+		if (entity.objecttype !== Entity.TYPE_NPC && entity.objecttype !== Entity.TYPE_NPC2) {
+			return;
+		}
+
+		const distance = Math.max(Math.abs(entity.position[0] - x), Math.abs(entity.position[1] - y));
+		if (distance < bestDistance) {
+			bestDistance = distance;
+			found = entity;
+		}
+
+		return true;
+	});
+
+	return found;
+}
+
+/**
+ * Find a cell next to a position to stand on. Unlike checkFreeCell this never
+ * returns the position itself, which may be hidden behind an NPC the client
+ * does not know about yet (a move request onto a blocked cell is dropped by the
+ * server as a whole).
+ *
+ * @param {number} x
+ * @param {number} y
+ * @param {number} range
+ * @param {array} out
+ * @return {boolean} found
+ */
+function findStandCell(x, y, range, out) {
+	const d_x = Session.Entity.position[0] < x ? -1 : 1;
+	const d_y = Session.Entity.position[1] < y ? -1 : 1;
+
+	for (let r = 1; r <= range; ++r) {
+		for (let _x = -r; _x <= r; ++_x) {
+			for (let _y = -r; _y <= r; ++_y) {
+				// The layers overlap, so the target cell itself shows up again
+				// at every radius: skip it, an NPC may be standing there.
+				if (_x === 0 && _y === 0) {
+					continue;
+				}
+				const cellX = x + _x * d_x;
+				const cellY = y + _y * d_y;
+				if (isFreeCell(cellX, cellY)) {
+					out[0] = cellX;
+					out[1] = cellY;
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Pending signboard destination. Long walks are split in legs because the map
+ * server refuses a single move request longer than battle_config.max_walk_path
+ * (17 cells by default).
+ *
+ * @type {?{x: number, y: number, targetX: number, targetY: number, npc: ?object}}
+ */
+let _signboardGoal = null;
+
+/**
+ * @var {number} max cells sent per move request
+ */
+const SIGNBOARD_WALK_LEG = 12;
+
+/**
+ * Send a move request to a map cell.
+ *
+ * @param {number} x
+ * @param {number} y
+ */
+function sendMove(x, y) {
+	let pkt;
+	if (PACKETVER.value >= 20180307) {
+		pkt = new PACKET.CZ.REQUEST_MOVE2();
+	} else {
+		pkt = new PACKET.CZ.REQUEST_MOVE();
+	}
+	pkt.dest[0] = x;
+	pkt.dest[1] = y;
+	Network.sendPacket(pkt);
+}
+
+/**
+ * Walk one leg toward the pending signboard destination.
+ */
+function walkSignboardLeg() {
+	const goal = _signboardGoal;
+	if (!goal) {
+		return;
+	}
+
+	if (!Session.Entity || !Session.Entity.position) {
+		_signboardGoal = null;
+		return;
+	}
+
+	// The NPC may have been out of the entity area when the label was clicked:
+	// look it up again now that the character is closer.
+	if (!goal.npc) {
+		goal.npc = getNpcAtCell(goal.targetX, goal.targetY);
+	}
+
+	const fromX = Math.round(Session.Entity.position[0]);
+	const fromY = Math.round(Session.Entity.position[1]);
+	const deltaX = goal.x - fromX;
+	const deltaY = goal.y - fromY;
+	const distance = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+
+	if (distance === 0) {
+		_signboardGoal = null;
+		if (goal.npc) {
+			goal.npc.onMouseDown();
+		}
+		return;
+	}
+
+	if (distance <= SIGNBOARD_WALK_LEG) {
+		// Last leg: contact the NPC as soon as the character stops walking
+		_signboardGoal = null;
+
+		if (goal.npc) {
+			const contact = new PACKET.CZ.CONTACTNPC();
+			contact.NAID = goal.npc.GID;
+			contact.type = 1;
+			Session.moveAction = contact;
+		} else {
+			Session.moveAction = null;
+		}
+
+		sendMove(goal.x, goal.y);
+		return;
+	}
+
+	// Too far for a single request, advance toward the goal and continue on
+	// the next walk end.
+	Session.moveAction = null;
+	sendMove(
+		fromX + Math.round((deltaX / distance) * SIGNBOARD_WALK_LEG),
+		fromY + Math.round((deltaY / distance) * SIGNBOARD_WALK_LEG)
+	);
+}
+
+/**
+ * Activate a world signboard label (double click on the map label).
+ *
+ * Signboards are client-side map markers, so they only become interactive when
+ * an NPC exists on that cell. Contact it directly when the character is in
+ * talking range, otherwise walk to the signboard and talk once arrived.
+ *
+ * @param {number} x - signboard cell x
+ * @param {number} y - signboard cell y
+ */
+function onSignboardActivate(x, y) {
+	if (!Session.Entity || !Session.Entity.position) {
+		return;
+	}
+
+	const npc = getNpcAtCell(x, y);
+	const target = npc ? [npc.position[0] | 0, npc.position[1] | 0] : [x, y];
+
+	if (npc) {
+		const dx = Math.abs(Session.Entity.position[0] - npc.position[0]);
+		const dy = Math.abs(Session.Entity.position[1] - npc.position[1]);
+
+		// Same range the official client allows talking from
+		if (Math.max(dx, dy) <= 2) {
+			npc.onMouseDown();
+			return;
+		}
+	}
+
+	// Never walk onto the signboard cell itself: an NPC may be standing there,
+	// even when the client does not know about it yet.
+	const stand = [target[0], target[1]];
+	if (!findStandCell(target[0], target[1], 9, stand)) {
+		stand[0] = target[0];
+		stand[1] = target[1];
+	}
+
+	_signboardGoal = { x: stand[0], y: stand[1], targetX: x, targetY: y, npc: npc || null };
+	walkSignboardLeg();
 }
 
 /**
@@ -1213,6 +1419,11 @@ function onWalkEnd() {
 				Session.moveAction = null;
 			}
 		}, 50);
+	}
+
+	// Continue walking toward a signboard that was too far for one request
+	if (_signboardGoal) {
+		walkSignboardLeg();
 	}
 }
 
