@@ -7,7 +7,9 @@
 }
 
 * {
-	-moz-user-select: none;
+	/* Selection is left to the browser on purpose: the game canvas already blocks
+	   selectstart in Renderer.js, so text in windows/chat stays selectable for
+	   select-to-translate and copy/paste. */
 	/* SCDream4.otf is registered at its real weight (200) and SCDream6.otf at 600,
 	   so normal text keeps its genuine outlines and `bold` resolves to the real
 	   SemiBold cut instead of faux-bolding the light one. Keep synthesis enabled so
@@ -69,8 +71,6 @@ body {
 	   / Liberation Sans already carry correct metrics, only annex fonts degrade). */
 	font-size-adjust: 0.5186;
 	overflow: hidden;
-	-webkit-user-select: none;
-	user-select: none;
 	min-width: 100vw;
 	min-height: 100vh;
 	letter-spacing: 0;

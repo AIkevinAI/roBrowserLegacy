@@ -162,18 +162,18 @@ class Renderer {
 				event.preventDefault();
 			});
 
-			// Keep the browser's text selection / drag behaviour out of the game:
-			// dragging the mouse used to select page text, and Edge then surfaced its
-			// "text actions" translation flyout over the game. Form fields and elements
-			// that explicitly opt in (.selectable) keep normal selection.
-			const keepTextSelection = event => {
+			// Keep the browser's text selection / drag behaviour off the 3D scene:
+			// dragging the camera used to select page text, and Edge then surfaced its
+			// "text actions" translation flyout over the game. Only selections that
+			// start on the canvas are blocked, so UI, chat and dialog text stay
+			// selectable for select-to-translate and copy/paste.
+			const keepCanvasSelection = event => {
 				const target = event.composedPath ? event.composedPath()[0] : event.target;
-				if (target && target.closest && target.closest('input, textarea, [contenteditable], .selectable')) {
-					return;
+				if (target === this.canvas) {
+					event.preventDefault();
 				}
-				event.preventDefault();
 			};
-			window.addEventListener('selectstart', keepTextSelection, true);
+			window.addEventListener('selectstart', keepCanvasSelection, true);
 			this.canvas.addEventListener('dragstart', event => event.preventDefault());
 
 			// Listen for visual viewport changes (mobile input focus zoom, pinch zoom)
