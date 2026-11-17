@@ -19,6 +19,9 @@ Config.local.js
 /data/*
 /save/*
 
+# Local launch helper (created by the user, not part of the client)
+/start-client.bat
+
 # IDE files
 .idea/
 .vscode/*
